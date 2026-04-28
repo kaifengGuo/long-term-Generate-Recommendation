@@ -1,0 +1,37 @@
+{
+  "configs": [
+    {
+      "name": "default_reuse_iter1",
+      "notes": "Reuse the current best HCLA smoke actor as the control inside the ablation sweep.",
+      "actor_ckpt": "../../../results/tiger_hcla_rl_iterative_smoke_fixbatch_20260319/iter_01/actor/hcla_actor_tiger.pth"
+    },
+    {
+      "name": "hazard_high_050",
+      "notes": "Increase explicit exit-risk penalty to see whether stronger long-term pressure helps reward retention.",
+      "chain_args": {
+        "hazard_lambda": 0.5
+      }
+    },
+    {
+      "name": "longview_heavy",
+      "notes": "Increase long-view weight in the long-term target while leaving the actor update unchanged.",
+      "chain_args": {
+        "reward_weights_json": {
+          "is_click": 1.0,
+          "long_view": 1.0
+        }
+      }
+    },
+    {
+      "name": "actor_longterm_strong",
+      "notes": "Blend more critic signal into the actor and increase page/hazard gating pressure for long-horizon updates.",
+      "actor_args": {
+        "adv_blend_alpha": 0.7,
+        "page_adv_scale": 0.25,
+        "item_adv_scale": 0.2,
+        "hazard_gate_scale": 0.2,
+        "sft_scale": 0.02
+      }
+    }
+  ]
+}

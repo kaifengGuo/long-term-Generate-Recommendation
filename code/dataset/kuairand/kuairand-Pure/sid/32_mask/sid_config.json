@@ -1,0 +1,11 @@
+{
+  "n_layers": 4,
+  "codebook_size": 32,
+  "max_tag": 500,
+  "max_iter": 50,
+  "n_init": 10,
+  "seed": 42,
+  "reconstruction_mse": 5.4797210693359375,
+  "num_videos": 7583,
+  "feature_dim": 127
+}

@@ -1,0 +1,28 @@
+# Generated artifacts
+output/
+results/
+checkpoints/
+*.pt
+*.pth
+*.pkl
+*.ckpt
+*.log
+
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local/private notes and helper files
+memory/
+demo_logs/
+TOOLS.md
+*.DS_Store
+.DS_Store
+
+# Environment files
+.env
+.venv/
+venv/
+
