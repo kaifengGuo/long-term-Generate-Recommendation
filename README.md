@@ -37,6 +37,12 @@ The clean mainline is support-aware adaptive-trust GRPO:
 
 The launcher keeps the method focused on GRPO plus support/uncertainty-aware trust control. Pairwise DPO-style ablations are not part of this clean entrypoint.
 
+## Baseline And Ablations
+
+The original base TIGER policy and completed ablation summary are documented in
+`docs/ablation_summary.md`. Model checkpoints and generated result directories are intentionally
+kept outside git and should be supplied separately when reproducing the numbers.
+
 ## Run
 
 Prepare checkpoints and simulator artifacts under the expected relative paths, or pass them explicitly through environment variables:
