@@ -37,9 +37,12 @@ The original base TIGER checkpoint is not stored in git. Pass it through `TIGER_
 | DPO-only support-aware | Same as above, continued | 2 | 4.2817 | 4.6653 | 4.7008 | 4.5358 | Temporary EMA recovery |
 | DPO-only support-aware | Same as above, continued | 3 | 4.7008 | 4.6869 | 4.4558 | 3.8825 | Preference-only update is not stable |
 | SAGERec adaptive-trust GRPO | Remove DPO; use support-aware pessimistic reward plus adaptive KL/clip | 1 | 4.5417 | 4.6387 | 4.4742 | 4.6825 | Current mainline; learner improves over base in iter1 |
+| SAGERec adaptive-trust GRPO | Same as above, continued | 2 | 4.4742 | 4.6742 | 4.7367 | 4.7383 | Best checkpoint in this run; both rollout and learner improve over base |
+| SAGERec adaptive-trust GRPO | Same as above, continued | 3 | 4.7367 | 4.6611 | 4.4567 | 4.3483 | Over-updates after iter2; motivates early stopping or adaptive stop criteria |
 
 ## Notes
 
-- SAGERec adaptive-trust GRPO was still running beyond iter1 when this summary was written.
+- SAGERec adaptive-trust GRPO finished 3 iterations. The best checkpoint in this run is iter2, with `after_learner = 4.7383` and `after_rollout = 4.7367`.
+- Iter3 regresses below the base policy, which suggests the closed-loop post-training objective benefits from early stopping or adaptive stop criteria.
 - The table intentionally records the original base TIGER row so that improvements and regressions are visible.
 - Checkpoints, simulator artifacts, and heavy generated groups are excluded from git. They should be distributed separately only when needed for reproduction.
