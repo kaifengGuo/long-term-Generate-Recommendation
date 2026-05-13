@@ -153,6 +153,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--actor_negative_floor", type=float, default=0.0)
     parser.add_argument("--actor_credit_clip", type=float, default=3.0)
     parser.add_argument("--actor_renorm_mode", type=str, default="batch_abs", choices=["none", "batch_abs"])
+    parser.add_argument(
+        "--actor_adv_combine_mode",
+        type=str,
+        default="multiplicative",
+        choices=["multiplicative", "additive_zero_sum"],
+    )
+    parser.add_argument("--actor_hca_residual_scale", type=float, default=0.50)
     parser.add_argument("--actor_clip_eps", type=float, default=0.20)
     parser.add_argument("--actor_kl_scale", type=float, default=0.05)
     parser.add_argument("--actor_adaptive_kl_support_scale", type=float, default=0.0)
@@ -1172,6 +1179,8 @@ def main() -> int:
                     "--negative_floor", str(args.actor_negative_floor),
                     "--credit_clip", str(args.actor_credit_clip),
                     "--renorm_mode", str(args.actor_renorm_mode),
+                    "--adv_combine_mode", str(args.actor_adv_combine_mode),
+                    "--hca_residual_scale", str(args.actor_hca_residual_scale),
                     "--clip_eps", str(args.actor_clip_eps),
                     "--kl_scale", str(args.actor_kl_scale),
                     "--adaptive_kl_support_scale", str(args.actor_adaptive_kl_support_scale),
@@ -1290,6 +1299,8 @@ def main() -> int:
                         "--negative_floor", str(args.actor_negative_floor),
                         "--credit_clip", str(args.actor_credit_clip),
                         "--renorm_mode", str(args.actor_renorm_mode),
+                        "--adv_combine_mode", str(args.actor_adv_combine_mode),
+                        "--hca_residual_scale", str(args.actor_hca_residual_scale),
                         "--clip_eps", str(args.actor_clip_eps),
                         "--kl_scale", str(args.actor_kl_scale),
                         "--adaptive_kl_support_scale", str(args.actor_adaptive_kl_support_scale),
@@ -1497,6 +1508,8 @@ def main() -> int:
                 "actor_page_adv_scale": float(args.actor_page_adv_scale),
                 "actor_page_gate_scale": float(args.actor_page_gate_scale),
                 "actor_page_gate_mode": str(args.actor_page_gate_mode),
+                "actor_adv_combine_mode": str(args.actor_adv_combine_mode),
+                "actor_hca_residual_scale": float(args.actor_hca_residual_scale),
                 "actor_clip_eps": float(args.actor_clip_eps),
                 "actor_kl_scale": float(args.actor_kl_scale),
                 "actor_adaptive_kl_support_scale": float(args.actor_adaptive_kl_support_scale),

@@ -413,6 +413,7 @@ def parse_args():
 
     p.add_argument("--model_size", type=str, default="small")
     p.add_argument("--num_layers", type=int, default=3)
+    p.add_argument("--hist_num_layers", type=int, default=2, help="history encoder layers")
     p.add_argument("--nhead", type=int, default=-1)
     p.add_argument("--sid_depth", type=int, default=4)
     p.add_argument("--num_classes", type=int, default=32)
@@ -658,7 +659,7 @@ def main():
         num_classes=args.num_classes,
         user_feat_dim=full_dataset.user_feat_dim,
         max_hist_len=args.max_hist_len_model,
-        hist_num_layers = 2,
+        hist_num_layers=args.hist_num_layers,
         value_layers=2,
         detach_value_dec_feats=True,
         use_decoder_ctx=args.use_decoder_ctx,

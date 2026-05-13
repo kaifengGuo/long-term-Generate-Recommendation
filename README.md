@@ -11,7 +11,8 @@ Clean code release for support-aware adaptive-trust post-training of generative 
 - `code/tiger_page_sid_rl/build_sid_advantage_chain.py`: hierarchical item/SID attribution construction.
 - `code/build_tiger_hca_grpo_groups.py`: group candidate construction with pessimistic support-aware value.
 - `code/train_tiger_hca_grpo_actor.py`: adaptive-trust GRPO actor update.
-- Baseline model/evaluator code needed for comparison and reuse.
+- Strict baseline model/evaluator code needed for comparison and reuse.
+- `code/baseline_notes/`: claim-boundary notes for newly added baselines.
 
 ## What Is Intentionally Excluded
 
@@ -20,22 +21,37 @@ Clean code release for support-aware adaptive-trust post-training of generative 
 - Private connection helpers or local machine utilities.
 - Cached Python files.
 - Generated `output/` and `results/` directories.
+- Generated caches, jsonl traces, checkpoints, and simulator logs.
 - Vendored external raw datasets and external repository snapshots.
 
 This release is code-first. Checkpoints, simulator logs, and large datasets should be provided separately if the recipient needs to reproduce a run.
 
 ## Main Method
 
-The clean mainline is support-aware adaptive-trust GRPO:
+The clean mainline is HCA-LCB-GRPO, a DPO-free post-training path for generative recommendation:
 
 1. Collect closed-loop rollouts from a TIGER policy.
 2. Train an ensemble page critic to estimate long-term page value and uncertainty.
-3. Build candidate groups with a pessimistic support-aware score.
+3. Build candidate groups with a lower-confidence long-term score.
 4. Use hierarchical item/SID attribution to expose credit assignment signals.
 5. Update the actor with group-relative policy optimization.
-6. Adaptively tighten the trust region when support gap or critic uncertainty is high.
+6. Keep the policy close to the base model with clipped GRPO and conservative EMA rollout selection.
 
-The launcher keeps the method focused on GRPO plus support/uncertainty-aware trust control. Pairwise DPO-style ablations are not part of this clean entrypoint.
+The current TIGER suite launcher exposes the main DPO-free path as `hca_lcb_grpo`. Pairwise DPO-style methods are kept as baselines/ablations, not as the clean entrypoint.
+
+## Strict Baselines
+
+The release now includes strict same-protocol launchers for:
+
+- Sequential recommenders: SASRec, GRU4Rec, BERT4Rec, and P5-style constrained generation.
+- RL and slate variants: HAC, DDPG, TD3, A2C, and SlateQ-like TIGER slate-value reranking.
+- Post-training baselines: S-DPO, SPRec, ReRe-style GRPO, Plain DPO, and OneRec LTV-GRPO variants.
+
+Claim boundaries are important:
+
+- `P5-style` is not an official OpenP5 reproduction unless the official prompt/pretraining recipe is integrated.
+- `SlateQ-like` is not canonical SlateQ unless the SlateQ decomposition/objective is matched and documented.
+- Generated result folders are intentionally excluded; rerun the launchers or provide checkpoints/results separately.
 
 ## Baseline And Ablations
 

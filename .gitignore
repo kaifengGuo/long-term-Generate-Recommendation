@@ -2,11 +2,17 @@
 output/
 results/
 checkpoints/
+cache/
+code/cache_*/
+external/
+data/raw/
+dataset/
 *.pt
 *.pth
 *.pkl
 *.ckpt
 *.log
+*.jsonl
 
 # Python/cache
 __pycache__/
@@ -17,6 +23,7 @@ __pycache__/
 # Local/private notes and helper files
 memory/
 demo_logs/
+.codex_private/
 TOOLS.md
 *.DS_Store
 .DS_Store
@@ -25,4 +32,3 @@ TOOLS.md
 .env
 .venv/
 venv/
-

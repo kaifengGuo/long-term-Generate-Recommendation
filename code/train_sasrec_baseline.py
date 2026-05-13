@@ -34,12 +34,19 @@ from sasrec_utils import (
 )
 
 
-def build_global_mapping_and_click_sequences(csv_path: str) -> Tuple[List[List[int]], Dict[int, int], Dict[int, int], int]:
+def build_global_mapping_and_click_sequences(
+    csv_path: str,
+    mapping_order: str = "sorted",
+) -> Tuple[List[List[int]], Dict[int, int], Dict[int, int], int]:
     """
     1) Read minimal columns.
     2) Build GLOBAL mapping on ALL rows:
          video_id -> item_id in 1..n_items_total
        (this prevents OOB when raw video_id is large / not contiguous)
+       mapping_order controls the catalog order:
+         - sorted: np.unique order, kept for backward compatibility.
+         - first_seen: pandas unique order, matching KRMBSeqReader.item_id_vocab
+           used by the online environment candidate pool.
     3) Filter is_click==1 and build per-user sequences (sorted by time).
 
     Returns:
@@ -53,7 +60,13 @@ def build_global_mapping_and_click_sequences(csv_path: str) -> Tuple[List[List[i
     df = pd.read_csv(csv_path, usecols=usecols, dtype=dtypes)
 
     all_vid = df["video_id"].to_numpy()
-    uniq_vid = np.unique(all_vid)  # sorted
+    mapping_order = str(mapping_order or "sorted").lower()
+    if mapping_order == "sorted":
+        uniq_vid = np.unique(all_vid)  # sorted
+    elif mapping_order in {"first_seen", "env", "reader"}:
+        uniq_vid = df["video_id"].drop_duplicates().to_numpy()
+    else:
+        raise ValueError(f"Unknown mapping_order={mapping_order}; use sorted|first_seen")
     vid2iid = {int(v): int(i + 1) for i, v in enumerate(uniq_vid.tolist())}
     n_items_total = int(len(uniq_vid))
 
@@ -61,7 +74,10 @@ def build_global_mapping_and_click_sequences(csv_path: str) -> Tuple[List[List[i
     df.sort_values(["user_id", "time_ms"], inplace=True, kind="mergesort")
 
     vids_click = df["video_id"].to_numpy()
-    iid_click = (np.searchsorted(uniq_vid, vids_click).astype(np.int32) + 1)
+    if mapping_order == "sorted":
+        iid_click = (np.searchsorted(uniq_vid, vids_click).astype(np.int32) + 1)
+    else:
+        iid_click = df["video_id"].map(vid2iid).to_numpy(dtype=np.int32)
 
     uids = df["user_id"].to_numpy()
     unique_uids, start_idx, counts = np.unique(uids, return_index=True, return_counts=True)
@@ -89,6 +105,10 @@ def main():
     parser.add_argument("--csv_path", type=str, required=True)
     parser.add_argument("--max_len", type=int, default=50)
     parser.add_argument("--cache_dir", type=str, default="")
+    parser.add_argument(
+        "--mapping_order", type=str, default="sorted", choices=["sorted", "first_seen"],
+        help="Item-id mapping order. first_seen matches the online KuaiRand reader candidate ids."
+    )
     parser.add_argument("--d_model", type=int, default=128)
     parser.add_argument("--n_heads", type=int, default=4)
     parser.add_argument("--n_layers", type=int, default=2)
@@ -134,14 +154,23 @@ def main():
         n_items_total = int(meta["n_items_total"])
     else:
         print(f"[Data] Building GLOBAL mapping + click sequences from CSV: {args.csv_path}")
-        user_seqs, vid2iid, uid2uix, n_items_total = build_global_mapping_and_click_sequences(args.csv_path)
+        print(f"[Data] mapping_order={args.mapping_order}")
+        user_seqs, vid2iid, uid2uix, n_items_total = build_global_mapping_and_click_sequences(
+            args.csv_path,
+            mapping_order=args.mapping_order,
+        )
 
         clicks_total = sum(len(s) for s in user_seqs)
         print(f"[Data] n_users={len(user_seqs)} n_items_total={n_items_total} clicks_total={clicks_total}")
 
         if cache_npz:
             np.savez_compressed(cache_npz, user_seqs=np.array(user_seqs, dtype=object))
-            save_json({"vid2iid": vid2iid, "uid2uix": uid2uix, "n_items_total": n_items_total}, cache_meta)
+            save_json({
+                "vid2iid": vid2iid,
+                "uid2uix": uid2uix,
+                "n_items_total": n_items_total,
+                "mapping_order": args.mapping_order,
+            }, cache_meta)
             print(f"[Data] Saved cache to {cache_npz} and {cache_meta}")
 
     n_users = len(user_seqs)

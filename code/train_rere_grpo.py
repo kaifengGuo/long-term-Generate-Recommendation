@@ -373,6 +373,75 @@ def compute_rere_rewards(
     return r_rule + (w_rank * r_rank)
 
 
+def build_sid_ltv_reward_table(
+    dataset: KRPureValueDataset,
+    num_classes: int,
+    sid_depth: int,
+    beta: float,
+    unknown_policy: str,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float]]:
+    """Estimate SID-level long-term lower-confidence rewards from log LTV labels."""
+    n_slots = int(num_classes) ** int(sid_depth)
+    target_sid = dataset.target_sid.long()
+    ltv = dataset.ltvs.view(-1).float()
+    multipliers = torch.tensor(
+        [int(num_classes) ** (int(sid_depth) - 1 - i) for i in range(int(sid_depth))],
+        dtype=torch.long,
+    )
+    sid_idx = (target_sid * multipliers.view(1, -1)).sum(dim=1).long()
+
+    counts = torch.bincount(sid_idx, minlength=n_slots).float()
+    sums = torch.bincount(sid_idx, weights=ltv, minlength=n_slots)
+    sq_sums = torch.bincount(sid_idx, weights=ltv * ltv, minlength=n_slots)
+
+    denom = counts.clamp_min(1.0)
+    mean = sums / denom
+    var = (sq_sums / denom - mean * mean).clamp_min(0.0)
+    std = torch.sqrt(var)
+
+    global_mean = float(ltv.mean().item()) if ltv.numel() else 0.0
+    global_std = float(ltv.std(unbiased=False).item()) if ltv.numel() else 0.0
+    unknown_policy = str(unknown_policy).lower()
+    if unknown_policy == "global_lcb":
+        fallback = global_mean - float(beta) * global_std
+    elif unknown_policy == "global_mean":
+        fallback = global_mean
+    elif unknown_policy == "zero":
+        fallback = 0.0
+    elif unknown_policy == "min_observed":
+        observed = counts > 0
+        fallback = float((mean - float(beta) * std)[observed].min().item()) if bool(observed.any()) else 0.0
+    else:
+        raise ValueError(f"unknown --ltv_unknown_policy={unknown_policy}")
+
+    reward = mean - float(beta) * std
+    reward[counts <= 0] = float(fallback)
+
+    observed = counts > 0
+    meta = {
+        "ltv_table_slots": float(n_slots),
+        "ltv_observed_sids": float(observed.sum().item()),
+        "ltv_global_mean": float(global_mean),
+        "ltv_global_std": float(global_std),
+        "ltv_beta": float(beta),
+        "ltv_unknown_fallback": float(fallback),
+        "ltv_reward_observed_mean": float(reward[observed].mean().item()) if bool(observed.any()) else 0.0,
+        "ltv_reward_observed_std": float(reward[observed].std(unbiased=False).item()) if bool(observed.any()) else 0.0,
+    }
+    return reward.to(device), multipliers.to(device), meta
+
+
+def lookup_sid_ltv_reward(
+    seq_all: torch.Tensor,
+    reward_table: torch.Tensor,
+    index_multipliers: torch.Tensor,
+) -> torch.Tensor:
+    sid_idx = (seq_all.long() * index_multipliers.view(1, 1, -1)).sum(dim=-1).long()
+    sid_idx = sid_idx.clamp(min=0, max=reward_table.numel() - 1)
+    return reward_table[sid_idx]
+
+
 
 @torch.no_grad()
 def update_reference_policy(ref_model: torch.nn.Module, model: torch.nn.Module, *, mode: str = "ema", tau: float = 0.05) -> None:
@@ -418,6 +487,10 @@ def grpo_step(
     add_gt: int = 0,
     skip_nohit: int = 0,
     kl_estimator: str = 'exp',
+    reward_mode: str = "rere",
+    ltv_reward_table: Optional[torch.Tensor] = None,
+    ltv_index_multipliers: Optional[torch.Tensor] = None,
+    ltv_mix_rere: float = 0.5,
 ):
     target_sid, user_feat, hist_sid, hist_len, sample_w, _ = batch
     target_sid = target_sid.to(device).long()
@@ -474,7 +547,23 @@ def grpo_step(
 
     logp_old_all = logp_old_flat.view(B, W).detach()
 
-    r = compute_rere_rewards(seq_all, target_sid, logp_old_all, w_rank=w_rank)
+    r_rere = compute_rere_rewards(seq_all, target_sid, logp_old_all, w_rank=w_rank)
+    reward_mode = str(reward_mode).lower()
+    r_ltv: Optional[torch.Tensor] = None
+    if reward_mode in {"ltv_mean", "ltv_lcb", "hybrid_rere_ltv_lcb"}:
+        if ltv_reward_table is None or ltv_index_multipliers is None:
+            raise ValueError(f"reward_mode={reward_mode} requires ltv_reward_table and ltv_index_multipliers")
+        r_ltv = lookup_sid_ltv_reward(seq_all, ltv_reward_table, ltv_index_multipliers)
+
+    if reward_mode == "rere":
+        r = r_rere
+    elif reward_mode in {"ltv_mean", "ltv_lcb"}:
+        r = r_ltv
+    elif reward_mode == "hybrid_rere_ltv_lcb":
+        mix = float(min(max(float(ltv_mix_rere), 0.0), 1.0))
+        r = mix * r_rere + (1.0 - mix) * r_ltv
+    else:
+        raise ValueError(f"Unknown reward_mode={reward_mode}")
     r_mean = r.mean(dim=1, keepdim=True)
     r_std = r.std(dim=1, keepdim=True)
     adv = (r - r_mean) / (r_std + 1e-6)
@@ -545,6 +634,9 @@ def grpo_step(
         "kl_ref": float(kl_ref.detach().cpu()),
         "sft": float(sft.detach().cpu()),
         "r_mean": float(r.mean().detach().cpu()),
+        "r_std": float(r.std(unbiased=False).detach().cpu()),
+        "r_ltv_mean": float(r_ltv.mean().detach().cpu()) if r_ltv is not None else 0.0,
+        "reward_mode_ltv": float(1.0 if reward_mode != "rere" else 0.0),
         "hit_rate_in_group": float((r > 0.5).float().mean().detach().cpu()),
         "nohit_frac": float(nohit_frac.cpu()),
         "hit_any_rate": float(hit_any_rate.cpu()),
@@ -643,6 +735,7 @@ def parse_args():
 
     p.add_argument("--model_size", type=str, default="small")
     p.add_argument("--num_layers", type=int, default=3)
+    p.add_argument("--hist_num_layers", type=int, default=2, help="history encoder layers")
     p.add_argument("--nhead", type=int, default=-1)
     p.add_argument("--sid_depth", type=int, default=4)
     p.add_argument("--num_classes", type=int, default=32)
@@ -671,6 +764,22 @@ def parse_args():
     p.add_argument("--old_model_update_every", type=int, default=1)
     p.add_argument("--skip_nohit", type=int, default=0, help="If 1, skip GRPO updates on groups where GT is absent (no hit).")
     p.add_argument("--kl_estimator", type=str, default="exp", choices=["exp","mean_log_ratio"], help="How to estimate KL(pi||ref) from samples. exp is non-negative (recommended).")
+    p.add_argument(
+        "--reward_mode",
+        type=str,
+        default="rere",
+        choices=["rere", "ltv_mean", "ltv_lcb", "hybrid_rere_ltv_lcb"],
+        help="Group reward source. ltv_lcb uses SID-level mean_LTV - beta*std_LTV.",
+    )
+    p.add_argument("--ltv_beta", type=float, default=1.0, help="Pessimism beta for ltv_lcb reward.")
+    p.add_argument(
+        "--ltv_unknown_policy",
+        type=str,
+        default="global_lcb",
+        choices=["global_lcb", "global_mean", "zero", "min_observed"],
+        help="Reward fallback for generated SIDs unseen in the offline LTV table.",
+    )
+    p.add_argument("--ltv_mix_rere", type=float, default=0.5, help="Rere weight for hybrid_rere_ltv_lcb.")
 
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=2026)
@@ -758,6 +867,7 @@ def main():
         num_classes=args.num_classes,
         user_feat_dim=full_dataset.user_feat_dim,
         max_hist_len=args.max_hist_len_model,
+        hist_num_layers=args.hist_num_layers,
         value_layers=2,
         detach_value_dec_feats=True,
         use_decoder_ctx=args.use_decoder_ctx,
@@ -783,6 +893,20 @@ def main():
     trie_mask, trie_next = build_trie_from_sid_mapping(
         args.sid_mapping_path, args.sid_depth, args.num_classes, device
     )
+
+    ltv_reward_table = None
+    ltv_index_multipliers = None
+    if str(args.reward_mode).lower() in {"ltv_mean", "ltv_lcb", "hybrid_rere_ltv_lcb"}:
+        beta_for_table = float(args.ltv_beta) if str(args.reward_mode).lower() != "ltv_mean" else 0.0
+        ltv_reward_table, ltv_index_multipliers, ltv_meta = build_sid_ltv_reward_table(
+            full_dataset,
+            num_classes=args.num_classes,
+            sid_depth=args.sid_depth,
+            beta=beta_for_table,
+            unknown_policy=args.ltv_unknown_policy,
+            device=device,
+        )
+        print("[LTV-Reward]", " ".join([f"{k}={v:.6f}" for k, v in ltv_meta.items()]))
 
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     topk_list = [int(x) for x in args.topk.split(",") if x.strip()]
@@ -828,7 +952,13 @@ def main():
                 sft_coef=args.sft_coef,
                 dropout_in_policy=args.dropout_in_policy,
                 add_gt=args.add_gt,
+                skip_nohit=args.skip_nohit,
+                kl_estimator=args.kl_estimator,
                 gt_weight_norm=args.gt_weight_norm,
+                reward_mode=args.reward_mode,
+                ltv_reward_table=ltv_reward_table,
+                ltv_index_multipliers=ltv_index_multipliers,
+                ltv_mix_rere=args.ltv_mix_rere,
             )
             loss.backward()
             if args.grad_clip > 0:

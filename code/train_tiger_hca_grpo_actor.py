@@ -55,6 +55,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--negative_floor", type=float, default=0.0)
     parser.add_argument("--credit_clip", type=float, default=3.0)
     parser.add_argument("--renorm_mode", type=str, default="batch_abs", choices=["none", "batch_abs"])
+    parser.add_argument(
+        "--adv_combine_mode",
+        type=str,
+        default="multiplicative",
+        choices=["multiplicative", "additive_zero_sum"],
+        help=(
+            "How to combine group-level GRPO advantage with HCA token residuals. "
+            "multiplicative keeps the original signed sparse weighting; "
+            "additive_zero_sum preserves the group-level sum while allowing token-level residual correction."
+        ),
+    )
+    parser.add_argument(
+        "--hca_residual_scale",
+        type=float,
+        default=0.50,
+        help="Scale for zero-sum HCA token residuals when --adv_combine_mode=additive_zero_sum.",
+    )
     parser.add_argument("--clip_eps", type=float, default=0.20)
     parser.add_argument("--kl_scale", type=float, default=0.05)
     parser.add_argument("--adaptive_kl_support_scale", type=float, default=0.0)
@@ -227,6 +244,8 @@ def build_effective_advantages(
     negative_floor: float,
     credit_clip: float,
     renorm_mode: str,
+    adv_combine_mode: str,
+    hca_residual_scale: float,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     if float(credit_clip) > 0.0:
         token_adv = token_adv.clamp(min=-float(credit_clip), max=float(credit_clip))
@@ -244,18 +263,7 @@ def build_effective_advantages(
     pos_mask = build_sparse_mask(pos_scores, int(positive_topk), float(positive_floor))
     neg_mask = build_sparse_mask(neg_scores, int(negative_topk), float(negative_floor))
 
-    use_pos = group_adv >= 0.0
-    weight_scores = torch.where(use_pos.unsqueeze(-1), pos_scores, neg_scores)
-    weight_mask = torch.where(use_pos.unsqueeze(-1), pos_mask, neg_mask)
     abs_scores = token_adv.abs() + float(item_adv_scale) * item_adv.abs().unsqueeze(-1)
-    missing = weight_mask.sum(dim=-1) <= 0
-    if bool(missing.any()):
-        fallback_idx = abs_scores[missing].argmax(dim=-1, keepdim=True)
-        weight_mask[missing] = 0.0
-        weight_mask[missing].scatter_(1, fallback_idx, 1.0)
-        weight_scores[missing] = abs_scores[missing]
-
-    weights = normalize_weights(weight_scores.clamp_min(0.0), weight_mask)
     gate_mode = str(page_gate_mode).strip().lower()
     if gate_mode == "none":
         gate_signal = torch.zeros_like(page_reward)
@@ -267,7 +275,40 @@ def build_effective_advantages(
         gate_signal = torch.tanh(page_reward.abs())
     page_gate = 1.0 + float(page_gate_scale) * gate_signal
     page_gate = page_gate.clamp(min=float(page_gate_min), max=float(page_gate_max)).unsqueeze(-1)
-    effective_adv = group_adv.unsqueeze(-1) * page_gate * weights
+
+    if str(adv_combine_mode) == "additive_zero_sum":
+        attr_scores = token_adv + float(item_adv_scale) * item_adv.unsqueeze(-1)
+        weight_mask = ((pos_mask + neg_mask) > 0.0).float()
+        missing = weight_mask.sum(dim=-1) <= 0
+        if bool(missing.any()):
+            fallback_idx = abs_scores[missing].argmax(dim=-1, keepdim=True)
+            weight_mask[missing] = 0.0
+            weight_mask[missing].scatter_(1, fallback_idx, 1.0)
+
+        active_count = weight_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        active_attr = attr_scores * weight_mask
+        attr_mean = active_attr.sum(dim=-1, keepdim=True) / active_count
+        # Zero-sum residual redistributes credit within a sequence without changing
+        # the total group-level GRPO advantage assigned to that sequence.
+        attr_residual = (attr_scores - attr_mean) * weight_mask
+        list_component = group_adv.unsqueeze(-1) / active_count
+        effective_adv = page_gate * (
+            list_component + float(hca_residual_scale) * attr_residual
+        )
+        weights = weight_mask / active_count
+    else:
+        use_pos = group_adv >= 0.0
+        weight_scores = torch.where(use_pos.unsqueeze(-1), pos_scores, neg_scores)
+        weight_mask = torch.where(use_pos.unsqueeze(-1), pos_mask, neg_mask)
+        missing = weight_mask.sum(dim=-1) <= 0
+        if bool(missing.any()):
+            fallback_idx = abs_scores[missing].argmax(dim=-1, keepdim=True)
+            weight_mask[missing] = 0.0
+            weight_mask[missing].scatter_(1, fallback_idx, 1.0)
+            weight_scores[missing] = abs_scores[missing]
+
+        weights = normalize_weights(weight_scores.clamp_min(0.0), weight_mask)
+        effective_adv = group_adv.unsqueeze(-1) * page_gate * weights
     return effective_adv, weights, pos_mask, neg_mask, page_gate
 
 
@@ -293,6 +334,8 @@ def compute_grpo_loss(
     negative_floor: float,
     credit_clip: float,
     renorm_mode: str,
+    adv_combine_mode: str,
+    hca_residual_scale: float,
     clip_eps: float,
     kl_scale: float,
     adaptive_kl_support_scale: float,
@@ -324,6 +367,8 @@ def compute_grpo_loss(
         negative_floor=float(negative_floor),
         credit_clip=float(credit_clip),
         renorm_mode=str(renorm_mode),
+        adv_combine_mode=str(adv_combine_mode),
+        hca_residual_scale=float(hca_residual_scale),
     )
     active_mask = (weights > 0.0).float()
     trust_support = trust_support.clamp_min(0.0).unsqueeze(-1)
@@ -443,6 +488,8 @@ def forward_actor(
         negative_floor=float(args.negative_floor),
         credit_clip=float(args.credit_clip),
         renorm_mode=str(args.renorm_mode),
+        adv_combine_mode=str(args.adv_combine_mode),
+        hca_residual_scale=float(args.hca_residual_scale),
         clip_eps=float(args.clip_eps),
         kl_scale=float(args.kl_scale),
         adaptive_kl_support_scale=float(getattr(args, "adaptive_kl_support_scale", 0.0)),
@@ -597,6 +644,8 @@ def main() -> int:
         "item_adv_field": str(args.item_adv_field),
         "page_reward_field": str(args.page_reward_field),
         "page_gate_mode": str(args.page_gate_mode),
+        "adv_combine_mode": str(args.adv_combine_mode),
+        "hca_residual_scale": float(args.hca_residual_scale),
         "clip_eps": float(args.clip_eps),
         "kl_scale": float(args.kl_scale),
         "adaptive_kl_support_scale": float(args.adaptive_kl_support_scale),
